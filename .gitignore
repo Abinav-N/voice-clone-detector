@@ -1,0 +1,22 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.venv/
+
+# Model checkpoints (large binary files — don't commit these)
+checkpoints/
+*.pt
+*.pth
+
+# Datasets (large — never commit raw audio to git)
+manifests/*.csv
+data/
+*.wav
+*.flac
+*.mp3
+
+# OS/editor junk
+.DS_Store
+.vscode/
+.idea/
