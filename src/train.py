@@ -1,5 +1,6 @@
 import argparse
 import os
+import csv
 
 import numpy as np
 import torch
@@ -42,6 +43,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--out", default="checkpoints/")
+    ap.add_argument("--history", default=None, help="path to history CSV (defaults to <out>/history.csv)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -60,6 +62,11 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     best_eer = float("inf")
+    history_path = args.history if args.history else os.path.join(args.out, "history.csv")
+    with open(history_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "train_loss", "val_loss", "val_eer", "val_acc"])
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss = 0.0
@@ -79,13 +86,17 @@ def main():
         print(f"Epoch {epoch}: train_loss={train_loss:.4f} "
               f"val_loss={val_loss:.4f} val_EER={val_eer*100:.2f}% val_acc={val_acc*100:.2f}%")
 
+        with open(history_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{val_eer:.6f}", f"{val_acc:.6f}"])
+
         if val_eer < best_eer:
             best_eer = val_eer
             ckpt_path = os.path.join(args.out, "best.pt")
             torch.save({"model_state": model.state_dict(), "val_eer": val_eer}, ckpt_path)
             print(f"  -> new best (EER={val_eer*100:.2f}%), saved to {ckpt_path}")
 
-    print(f"Training done. Best val EER: {best_eer*100:.2f}%")
+    print(f"Training done. Best val EER: {best_eer*100:.2f}%. History logged to {history_path}")
 
 
 if __name__ == "__main__":

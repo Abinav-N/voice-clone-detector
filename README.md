@@ -96,6 +96,7 @@ raw audio (.wav/.flac)
 voice-clone-detector/
 ├── README.md
 ├── requirements.txt
+├── app.py                     # Gradio web dashboard (classify & training curves)
 ├── manifests/                 # generated CSV manifests go here
 └── src/
     ├── build_manifest.py      # dataset-specific -> generic CSV manifest
@@ -104,7 +105,8 @@ voice-clone-detector/
     ├── model.py                # CNN architecture
     ├── train.py                # training loop, checkpointing, EER-based model selection
     ├── evaluate.py             # EER / AUC / ROC / confusion matrix on a manifest
-    └── infer.py                 # classify a single wav file (REAL / FAKE + confidence)
+    ├── infer.py                 # classify a single wav file (REAL / FAKE + confidence)
+    └── metrics.py               # Equal Error Rate (EER) computation
 ```
 
 ## 5. Quickstart
@@ -113,7 +115,7 @@ voice-clone-detector/
 pip install -r requirements.txt
 
 # 1. Build manifests (edit paths inside for your dataset layout)
-python src/build_manifest.py --dataset for --root /path/to/for_dataset --out manifests/
+python src/build_manifest.py --dataset folder --root /path/to/for_dataset --out manifests/
 
 # 2. Train
 python src/train.py --train manifests/train.csv --val manifests/val.csv \
@@ -124,6 +126,9 @@ python src/evaluate.py --checkpoint checkpoints/best.pt --manifest manifests/tes
 
 # 4. Classify a single file
 python src/infer.py --checkpoint checkpoints/best.pt --wav path/to/clip.wav
+
+# 5. Launch interactive web dashboard
+python app.py
 ```
 
 ## 6. Stretch goals (if you finish early)
