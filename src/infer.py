@@ -8,8 +8,12 @@ from model import VoiceCloneCNN
 
 def load_model(checkpoint_path: str, device):
     model = VoiceCloneCNN().to(device)
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
+    try:
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except Exception:
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
+    model.load_state_dict(state_dict)
     model.eval()
     return model
 

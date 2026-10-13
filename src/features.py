@@ -66,3 +66,48 @@ def _pad_or_crop(feat: np.ndarray, target_frames: int) -> np.ndarray:
 def extract_features_from_path(path: str) -> np.ndarray:
     y = load_audio(path)
     return extract_mfcc_stack(y)
+
+
+def precompute_features_for_manifest(manifest_csv: str, cache_dir: str):
+    """Precompute MFCC stack (.npy) for all audio files listed in a manifest CSV."""
+    import os
+    import hashlib
+    from pathlib import Path
+    import pandas as pd
+    from tqdm import tqdm
+
+    df = pd.read_csv(manifest_csv)
+    if "filepath" not in df.columns:
+        raise ValueError(f"Manifest {manifest_csv} must have 'filepath' column.")
+
+    os.makedirs(cache_dir, exist_ok=True)
+    print(f"Precomputing features for {len(df)} files from '{manifest_csv}' -> '{cache_dir}'")
+    for fpath in tqdm(df["filepath"], desc="Caching MFCCs"):
+        abs_path = os.path.abspath(fpath)
+        h = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:16]
+        stem = Path(fpath).stem[:24]
+        out_file = os.path.join(cache_dir, f"{stem}_{h}.npy")
+        if not os.path.isfile(out_file):
+            feat = extract_features_from_path(fpath)
+            np.save(out_file, feat)
+    print("Done precomputing features.")
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Extract and cache MFCC features.")
+    ap.add_argument("--manifest", help="Manifest CSV to precompute features for")
+    ap.add_argument("--cache-dir", default=".cache/features", help="Output directory for .npy caches")
+    ap.add_argument("--test-audio", help="Optional test audio file to print output shape for")
+    args = ap.parse_args()
+
+    if args.manifest:
+        precompute_features_for_manifest(args.manifest, args.cache_dir)
+    elif args.test_audio:
+        feat = extract_features_from_path(args.test_audio)
+        print(f"Extracted features shape: {feat.shape} for {args.test_audio}")
+    else:
+        # Default synthetic sanity check
+        dummy_y = np.random.randn(SAMPLE_RATE * 3).astype(np.float32)
+        out = extract_mfcc_stack(dummy_y)
+        print("Sanity check passed. Synthetic features shape:", out.shape)

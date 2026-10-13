@@ -97,15 +97,21 @@ voice-clone-detector/
 ├── README.md
 ├── requirements.txt
 ├── app.py                     # Gradio web dashboard (classify & training curves)
+├── plots.py                   # Plot generator (ROC, DET, confusion matrix, histogram, curves)
+├── cross_eval.py              # Cross-dataset generalization evaluator (side-by-side table)
 ├── manifests/                 # generated CSV manifests go here
+├── results/                   # evaluation metrics JSON and raw score CSVs
+├── plots/                     # publication-ready figures (PNG)
 └── src/
     ├── build_manifest.py      # dataset-specific -> generic CSV manifest
     ├── features.py            # MFCC/delta/delta2 extraction
     ├── dataset.py             # PyTorch Dataset/DataLoader
     ├── model.py                # CNN architecture
-    ├── train.py                # training loop, checkpointing, EER-based model selection
-    ├── evaluate.py             # EER / AUC / ROC / confusion matrix on a manifest
+    ├── train.py                # training loop with ReduceLROnPlateau & early stopping
+    ├── evaluate.py             # EER / AUC / per-attack-type breakdown & results saving
     ├── infer.py                 # classify a single wav file (REAL / FAKE + confidence)
+    ├── plots.py                # plotting core implementation
+    ├── cross_eval.py           # cross-dataset evaluation logic
     └── metrics.py               # Equal Error Rate (EER) computation
 ```
 
@@ -114,20 +120,37 @@ voice-clone-detector/
 ```bash
 pip install -r requirements.txt
 
-# 1. Build manifests (edit paths inside for your dataset layout)
+# 1. Build manifests
+# Folder layout (e.g. Fake-or-Real):
 python src/build_manifest.py --dataset folder --root /path/to/for_dataset --out manifests/
 
-# 2. Train
+# Official ASVspoof 2019 LA layout (produces official train, val, and test with attack_id):
+python src/build_manifest.py --dataset asvspoof --root /path/to/asvspoof2019 --out manifests/
+
+# In-the-Wild (produces unseen test-only manifest):
+python src/build_manifest.py --dataset itw --root /path/to/in_the_wild --out manifests/
+
+# 2. Train (with feature caching, class-weighted loss, ReduceLROnPlateau & early stopping)
 python src/train.py --train manifests/train.csv --val manifests/val.csv \
-    --epochs 20 --batch-size 32 --out checkpoints/
+    --epochs 20 --batch-size 32 --cache --weighted-loss --patience 5 --out checkpoints/
 
-# 3. Evaluate
-python src/evaluate.py --checkpoint checkpoints/best.pt --manifest manifests/test.csv
+# Tip: Run a fast smoke test first (200 clips, finishes in seconds):
+python src/train.py --train manifests/train.csv --val manifests/val.csv \
+    --epochs 2 --max-samples 200 --cache --weighted-loss
 
-# 4. Classify a single file
+# 3. Evaluate (with per-attack-type EER error analysis and results saving to results/<name>.json & .csv)
+python src/evaluate.py --checkpoint checkpoints/best.pt --manifest manifests/test.csv --cache --name test_eval
+
+# 4. Generate all 5 publication-ready plots (ROC, DET, confusion matrix, histogram, training curves)
+python plots.py --scores results/test_eval.csv --history checkpoints/history.csv --out-dir plots/
+
+# 5. Cross-dataset evaluation (quantify generalization gap on unseen real-world deepfakes)
+python cross_eval.py --asvspoof manifests/test.csv --itw manifests/itw_test.csv
+
+# 6. Classify a single file
 python src/infer.py --checkpoint checkpoints/best.pt --wav path/to/clip.wav
 
-# 5. Launch interactive web dashboard
+# 7. Launch interactive web dashboard
 python app.py
 ```
 

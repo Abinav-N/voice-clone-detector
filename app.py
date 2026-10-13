@@ -42,7 +42,10 @@ def get_model(checkpoint_path: str):
         return _CACHED_MODEL
 
     model = VoiceCloneCNN().to(_DEVICE)
-    ckpt = torch.load(checkpoint_path, map_location=_DEVICE)
+    try:
+        ckpt = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=True)
+    except Exception:
+        ckpt = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=False)
     state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
     model.load_state_dict(state_dict)
     model.eval()
