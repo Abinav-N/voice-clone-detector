@@ -23,17 +23,25 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from model import VoiceCloneCNN
-from features import load_audio, extract_mfcc_stack, SAMPLE_RATE, N_MFCC, FIXED_FRAMES
+from features import (
+    load_audio, extract_mfcc_stack, extract_sliding_windows,
+    SAMPLE_RATE, N_MFCC, FIXED_FRAMES,
+)
 
 # Global model cache to avoid reloading on every request
 _CACHED_MODEL = None
 _CACHED_MODEL_PATH = None
+_CACHED_THRESHOLD = 0.5     # EER threshold from checkpoint (Task 16)
+_CACHED_FEATURE = "mfcc"    # feature type from checkpoint
 _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def get_model(checkpoint_path: str):
-    """Load model weights from checkpoint, caching the loaded model in memory."""
-    global _CACHED_MODEL, _CACHED_MODEL_PATH
+    """Load model weights from checkpoint, caching the loaded model in memory.
+
+    Task 16: also caches the EER threshold and feature type stored in the checkpoint.
+    """
+    global _CACHED_MODEL, _CACHED_MODEL_PATH, _CACHED_THRESHOLD, _CACHED_FEATURE
     checkpoint_path = os.path.abspath(checkpoint_path)
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
@@ -49,6 +57,14 @@ def get_model(checkpoint_path: str):
     state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
     model.load_state_dict(state_dict)
     model.eval()
+
+    # Task 16: store EER threshold and feature type from checkpoint
+    if isinstance(ckpt, dict):
+        _CACHED_THRESHOLD = float(ckpt.get("eer_threshold", 0.5))
+        _CACHED_FEATURE = ckpt.get("feature_type", "mfcc")
+    else:
+        _CACHED_THRESHOLD = 0.5
+        _CACHED_FEATURE = "mfcc"
 
     _CACHED_MODEL = model
     _CACHED_MODEL_PATH = checkpoint_path
@@ -100,7 +116,11 @@ def plot_mfcc(mfcc_channel: np.ndarray):
 
 
 def classify_audio(audio_path: str, checkpoint_path: str):
-    """Process uploaded audio, run CNN inference, and generate waveform + MFCC plots."""
+    """Process uploaded audio, run CNN inference, and generate waveform + MFCC plots.
+
+    Task 15 – Long-audio: sliding-window inference for clips > 3 s.
+    Task 16 – Threshold: uses EER threshold stored in the checkpoint.
+    """
     if not audio_path:
         return "Please upload or record an audio file.", {}, None, None
 
@@ -117,27 +137,42 @@ def classify_audio(audio_path: str, checkpoint_path: str):
         return f"❌ Error loading model checkpoint: {str(e)}", {}, None, None
 
     try:
-        # Load audio and extract features
         y = load_audio(audio_path, sr=SAMPLE_RATE)
-        feat = extract_mfcc_stack(y, sr=SAMPLE_RATE)  # (3, 40, 300)
+        duration_sec = len(y) / SAMPLE_RATE
 
-        # CNN forward pass
-        x = torch.from_numpy(feat).unsqueeze(0).to(_DEVICE)  # (1, 3, 40, 300)
+        # Task 15: sliding-window over long clips; single window for short clips
+        windows = extract_sliding_windows(
+            y, feature_type=_CACHED_FEATURE, window_sec=3.0, hop_sec=1.5
+        )  # (N, 3, 40, 300)
+        n_windows = windows.shape[0]
+
+        x = torch.from_numpy(windows).to(_DEVICE)      # (N, 3, 40, 300)
         with torch.no_grad():
-            logits = model(x)
-            probs = torch.softmax(logits, dim=1)[0]
+            logits = model(x)                           # (N, 2)
+            probs = torch.softmax(logits, dim=1)[:, 1]  # P(spoof) per window
 
-        p_real = float(probs[0].item())
-        p_spoof = float(probs[1].item())
+        window_scores = probs.cpu().numpy()
+        p_spoof = float(window_scores.mean())           # average across windows
+        p_real = 1.0 - p_spoof
 
-        is_fake = p_spoof > 0.5
+        # Task 16: use EER threshold from checkpoint
+        threshold = _CACHED_THRESHOLD
+        is_fake = p_spoof > threshold
         verdict_badge = "🔴 FAKE (AI-generated / Cloned)" if is_fake else "🟢 REAL (Human Speech)"
+
+        # MFCC plot: use the first window's channel-0 features
+        feat_first = windows[0]   # (3, 40, 300)
+
+        window_note = (
+            f"  ({n_windows} window(s), avg score)" if n_windows > 1 else ""
+        )
         verdict_text = (
             f"### Verdict: **{verdict_badge}**\n\n"
-            f"- **Confidence:** {max(p_real, p_spoof) * 100:.1f}%\n"
+            f"- **Confidence:** {max(p_real, p_spoof) * 100:.1f}%{window_note}\n"
             f"- **Spoof Probability (P_fake):** {p_spoof * 100:.2f}%\n"
             f"- **Human Probability (P_real):** {p_real * 100:.2f}%\n"
-            f"- **Duration:** {len(y) / SAMPLE_RATE:.2f} seconds ({len(y)} samples @ {SAMPLE_RATE} Hz)"
+            f"- **Decision Threshold (EER):** {threshold:.4f}\n"
+            f"- **Duration:** {duration_sec:.2f} s ({len(y)} samples @ {SAMPLE_RATE} Hz)"
         )
 
         confidences = {
@@ -145,9 +180,8 @@ def classify_audio(audio_path: str, checkpoint_path: str):
             "AI Cloned / Spoof": p_spoof,
         }
 
-        # Generate plots
         fig_waveform = plot_waveform(y, sr=SAMPLE_RATE)
-        fig_mfcc = plot_mfcc(feat[0])  # Channel 0 is standard MFCC
+        fig_mfcc = plot_mfcc(feat_first[0])  # Channel 0 — MFCC / Log-mel
 
         return verdict_text, confidences, fig_waveform, fig_mfcc
 

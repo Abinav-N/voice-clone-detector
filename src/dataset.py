@@ -1,10 +1,8 @@
 """
-Generic manifest-based dataset with optional feature caching and sample subsetting.
+Generic manifest-based dataset with feature caching, augmentation, and logmel/mfcc support.
 
 Expected CSV format:
     filepath,label[,attack_id]
-    /data/for/train/real/001.wav,bonafide,-
-    /data/for/train/fake/001.wav,spoof,A01
 """
 import os
 import hashlib
@@ -28,8 +26,13 @@ class VoiceSpoofDataset(Dataset):
         manifest_csv: str,
         max_samples: Optional[int] = None,
         cache_dir: Optional[str] = None,
+        feature_type: str = "mfcc",
+        augment: bool = False,
     ):
         self.manifest_path = manifest_csv
+        self.feature_type = feature_type.lower()
+        self.augment = augment
+
         self.df = pd.read_csv(manifest_csv)
         assert {"filepath", "label"}.issubset(self.df.columns), \
             f"Manifest {manifest_csv} must have 'filepath' and 'label' columns"
@@ -48,21 +51,21 @@ class VoiceSpoofDataset(Dataset):
             os.makedirs(self.cache_dir, exist_ok=True)
 
     def _get_cache_path(self, filepath: str) -> str:
-        """Generate a unique, safe cache filename for an audio file."""
+        """Generate a unique, safe cache filename for an audio file and feature type."""
         abs_path = os.path.abspath(filepath)
-        h = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:16]
+        h = hashlib.sha256(f"{abs_path}_{self.feature_type}".encode("utf-8")).hexdigest()[:16]
         stem = Path(filepath).stem[:24]
-        return os.path.join(self.cache_dir, f"{stem}_{h}.npy")
+        return os.path.join(self.cache_dir, f"{stem}_{self.feature_type}_{h}.npy")
 
     def precompute_cache(self):
-        """Precompute all MFCC features in this dataset to .npy files."""
+        """Precompute all features in this dataset to .npy files."""
         if not self.cache_dir:
             raise ValueError("Cannot precompute cache: cache_dir was not specified.")
-        print(f"Precomputing {len(self.df)} features into {self.cache_dir}...")
-        for filepath in tqdm(self.df["filepath"], desc="Caching features"):
+        print(f"Precomputing {self.feature_type} features ({len(self.df)} clips) into {self.cache_dir}...")
+        for filepath in tqdm(self.df["filepath"], desc=f"Caching {self.feature_type}"):
             cache_file = self._get_cache_path(filepath)
             if not os.path.isfile(cache_file):
-                feat = extract_features_from_path(filepath)
+                feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
                 np.save(cache_file, feat)
 
     def __len__(self):
@@ -72,15 +75,18 @@ class VoiceSpoofDataset(Dataset):
         row = self.df.iloc[idx]
         filepath = row["filepath"]
 
-        if self.cache_dir:
+        # If data augmentation is active, augment waveform on the fly (bypass static cache)
+        if self.augment:
+            feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=True)
+        elif self.cache_dir:
             cache_file = self._get_cache_path(filepath)
             if os.path.isfile(cache_file):
                 feat = np.load(cache_file)
             else:
-                feat = extract_features_from_path(filepath)
+                feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
                 np.save(cache_file, feat)
         else:
-            feat = extract_features_from_path(filepath)
+            feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
 
         label = int(row["label_idx"])
         return torch.from_numpy(feat), torch.tensor(label, dtype=torch.long)

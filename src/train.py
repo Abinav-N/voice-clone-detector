@@ -1,6 +1,8 @@
 import argparse
 import os
 import csv
+import json
+import random
 
 import numpy as np
 import torch
@@ -12,6 +14,17 @@ from tqdm import tqdm
 from dataset import VoiceSpoofDataset
 from model import VoiceCloneCNN
 from metrics import compute_eer
+
+
+def set_seed(seed: int = 42):
+    """Ensure strict reproducibility across Python, NumPy, and PyTorch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def evaluate(model, loader, device, criterion=None):
@@ -31,9 +44,9 @@ def evaluate(model, loader, device, criterion=None):
             all_labels.append(labels.cpu().numpy())
     scores = np.concatenate(all_scores)
     labels = np.concatenate(all_labels)
-    eer, _ = compute_eer(labels, scores)
+    eer, threshold = compute_eer(labels, scores)
     acc = ((scores > 0.5).astype(int) == labels).mean()
-    return total_loss / len(loader.dataset), eer, acc
+    return total_loss / len(loader.dataset), eer, threshold, acc
 
 
 def main():
@@ -43,37 +56,75 @@ def main():
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--num-workers", type=int, default=4 if os.name != "nt" else 0)
     ap.add_argument("--out", default="checkpoints/")
     ap.add_argument("--history", default=None, help="path to history CSV (defaults to <out>/history.csv)")
+
     # Task 3: max-samples for smoke tests
     ap.add_argument("--max-samples", type=int, default=None, help="limit samples per split for quick smoke tests")
+
     # Task 4: Feature caching
     ap.add_argument("--cache", action="store_true", help="enable feature caching to .npy files on disk")
     ap.add_argument("--cache-dir", default=".cache/features", help="directory to store cached .npy features")
     ap.add_argument("--precompute", action="store_true", help="precompute and cache all features before training")
+
     # Task 5: Class-imbalance handling
     ap.add_argument("--weighted-loss", action="store_true", help="use class-weighted loss computed from train label counts")
+
     # Task 6: LR scheduler and early stopping
     ap.add_argument("--patience", type=int, default=5, help="early stopping patience (epochs without val EER improvement, 0 to disable)")
     ap.add_argument("--lr-patience", type=int, default=3, help="patience for ReduceLROnPlateau (epochs)")
     ap.add_argument("--lr-factor", type=float, default=0.5, help="factor to multiply lr on plateau")
     ap.add_argument("--min-lr", type=float, default=1e-6, help="minimum lr for ReduceLROnPlateau")
     ap.add_argument("--min-delta", type=float, default=1e-4, help="minimum improvement in val EER to qualify as new best")
+
+    # Task 11: Data augmentation
+    ap.add_argument("--augment", action="store_true", help="apply online audio augmentation (noise, gain, shift, codec) to training audio")
+
+    # Task 13: Feature type option
+    ap.add_argument("--feature", choices=["mfcc", "logmel"], default="mfcc", help="feature representation ('mfcc' or 'logmel')")
+
+    # Task 17: Seed & Resume
+    ap.add_argument("--seed", type=int, default=42, help="random seed for reproducibility")
+    ap.add_argument("--resume", default=None, help="checkpoint path to resume training from")
+
     args = ap.parse_args()
+
+    # Reproducibility
+    set_seed(args.seed)
 
     os.makedirs(args.out, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"Using device: {device} | Seed: {args.seed} | Feature: {args.feature}")
+
+    # Save config.json next to checkpoint (Task 17)
+    config_path = os.path.join(args.out, "config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(vars(args), f, indent=2)
+    print(f"Saved configuration to: {config_path}")
 
     cache_dir = args.cache_dir if (args.cache or args.precompute) else None
-    if cache_dir:
+    if cache_dir and not args.augment:
         print(f"Feature caching active: storing/reading .npy files at '{cache_dir}'")
+    elif args.augment:
+        print("Data augmentation active: dynamic waveform augmentations applied to training split.")
 
-    train_ds = VoiceSpoofDataset(args.train, max_samples=args.max_samples, cache_dir=cache_dir)
-    val_ds = VoiceSpoofDataset(args.val, max_samples=args.max_samples, cache_dir=cache_dir)
+    train_ds = VoiceSpoofDataset(
+        args.train,
+        max_samples=args.max_samples,
+        cache_dir=cache_dir if not args.augment else None,
+        feature_type=args.feature,
+        augment=args.augment,
+    )
+    val_ds = VoiceSpoofDataset(
+        args.val,
+        max_samples=args.max_samples,
+        cache_dir=cache_dir,
+        feature_type=args.feature,
+        augment=False,
+    )
 
-    if args.precompute and cache_dir:
+    if args.precompute and cache_dir and not args.augment:
         train_ds.precompute_cache()
         val_ds.precompute_cache()
 
@@ -120,13 +171,38 @@ def main():
         criterion = nn.CrossEntropyLoss()
 
     best_eer = float("inf")
+    best_threshold = 0.5
     epochs_no_improve = 0
-    history_path = args.history if args.history else os.path.join(args.out, "history.csv")
-    with open(history_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "val_loss", "val_eer", "val_acc", "lr"])
+    start_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    # Task 17: Resume from checkpoint
+    if args.resume:
+        resume_file = args.resume if os.path.isfile(args.resume) else os.path.join(args.out, "best.pt")
+        if os.path.isfile(resume_file):
+            print(f"Resuming training state from checkpoint: '{resume_file}'")
+            try:
+                ckpt = torch.load(resume_file, map_location=device, weights_only=True)
+            except Exception:
+                ckpt = torch.load(resume_file, map_location=device, weights_only=False)
+
+            model.load_state_dict(ckpt["model_state"])
+            if "optimizer_state" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+            if "scheduler_state" in ckpt:
+                scheduler.load_state_dict(ckpt["scheduler_state"])
+            start_epoch = ckpt.get("epoch", 0) + 1
+            best_eer = ckpt.get("best_eer", ckpt.get("val_eer", float("inf")))
+            best_threshold = ckpt.get("eer_threshold", 0.5)
+            print(f"  -> Resumed at epoch {start_epoch} with best_eer={best_eer*100:.2f}%, threshold={best_threshold:.3f}")
+
+    history_path = args.history if args.history else os.path.join(args.out, "history.csv")
+    history_mode = "a" if (args.resume and os.path.isfile(history_path)) else "w"
+    if history_mode == "w":
+        with open(history_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_loss", "val_loss", "val_eer", "val_acc", "lr"])
+
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         running_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
@@ -141,11 +217,11 @@ def main():
             pbar.set_postfix(loss=loss.item())
 
         train_loss = running_loss / len(train_ds)
-        val_loss, val_eer, val_acc = evaluate(model, val_loader, device, criterion=criterion)
+        val_loss, val_eer, val_thresh, val_acc = evaluate(model, val_loader, device, criterion=criterion)
         current_lr = optimizer.param_groups[0]["lr"]
 
         print(f"Epoch {epoch}: train_loss={train_loss:.4f} "
-              f"val_loss={val_loss:.4f} val_EER={val_eer*100:.2f}% val_acc={val_acc*100:.2f}% lr={current_lr:.6e}")
+              f"val_loss={val_loss:.4f} val_EER={val_eer*100:.2f}% (thresh={val_thresh:.3f}) val_acc={val_acc*100:.2f}% lr={current_lr:.6e}")
 
         with open(history_path, "a", newline="") as f:
             writer = csv.writer(f)
@@ -159,12 +235,29 @@ def main():
             print(f"  -> Learning rate reduced: {old_lr:.6e} -> {new_lr:.6e}")
 
         # Model checkpointing & early stopping
+        checkpoint_payload = {
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "val_eer": float(val_eer),
+            "eer_threshold": float(val_thresh),
+            "best_eer": float(best_eer),
+            "feature_type": args.feature,
+            "config": vars(args),
+        }
+
+        # Save last.pt for uninterrupted resuming
+        torch.save(checkpoint_payload, os.path.join(args.out, "last.pt"))
+
         if val_eer < best_eer - args.min_delta:
             best_eer = val_eer
+            best_threshold = val_thresh
             epochs_no_improve = 0
             ckpt_path = os.path.join(args.out, "best.pt")
-            torch.save({"model_state": model.state_dict(), "val_eer": float(val_eer)}, ckpt_path)
-            print(f"  -> new best (EER={val_eer*100:.2f}%), saved to {ckpt_path}")
+            checkpoint_payload["best_eer"] = float(best_eer)
+            torch.save(checkpoint_payload, ckpt_path)
+            print(f"  -> new best (EER={val_eer*100:.2f}%, thresh={val_thresh:.3f}), saved to {ckpt_path}")
         else:
             epochs_no_improve += 1
             if args.patience > 0:
@@ -173,7 +266,7 @@ def main():
                     print(f"\n[Early Stopping] val EER has not improved for {args.patience} consecutive epochs. Early stopping at epoch {epoch}.")
                     break
 
-    print(f"Training done. Best val EER: {best_eer*100:.2f}%. History logged to {history_path}")
+    print(f"Training done. Best val EER: {best_eer*100:.2f}% (Threshold: {best_threshold:.3f}). History logged to {history_path}")
 
 
 if __name__ == "__main__":
