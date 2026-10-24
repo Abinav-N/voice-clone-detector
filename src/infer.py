@@ -8,18 +8,38 @@ Tasks implemented:
              instead of the hard-coded 0.5.
 """
 import argparse
+import sys
+from pathlib import Path
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import torch
 
-from features import (
-    load_audio,
-    extract_features,
-    extract_sliding_windows,
-    SAMPLE_RATE,
-    WINDOW_SAMPLES,
-)
-from model import VoiceCloneCNN
+try:
+    from features import (
+        load_audio,
+        extract_features,
+        extract_sliding_windows,
+        SAMPLE_RATE,
+        WINDOW_SAMPLES,
+    )
+    from model import VoiceCloneCNN
+except ImportError:
+    from src.features import (
+        load_audio,
+        extract_features,
+        extract_sliding_windows,
+        SAMPLE_RATE,
+        WINDOW_SAMPLES,
+    )
+    from src.model import VoiceCloneCNN
 
 
 # --------------------------------------------------------------------------- #

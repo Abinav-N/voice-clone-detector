@@ -7,9 +7,22 @@ Supports both:
 - 'logmel': 40 Log-Mel Spectrogram bands + derivatives
 And sliding window extraction for long audio clips (>3 seconds).
 """
+import sys
+from pathlib import Path
+
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import numpy as np
 import librosa
-from augment import apply_augmentations
+try:
+    from augment import apply_augmentations
+except ImportError:
+    from src.augment import apply_augmentations
 
 SAMPLE_RATE = 16000
 N_MFCC = 40

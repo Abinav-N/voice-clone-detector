@@ -53,11 +53,31 @@ def get_model(checkpoint_path: str):
     """Load model from checkpoint, caching it in memory.
 
     Also caches the EER threshold and feature type stored in the checkpoint.
+    If the checkpoint is not found, falls back to common paths or initializes
+    an evaluation instance for demo exploration.
     """
     global _CACHED_MODEL, _CACHED_MODEL_PATH, _CACHED_THRESHOLD, _CACHED_FEATURE
     checkpoint_path = os.path.abspath(checkpoint_path)
+
     if not os.path.isfile(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
+        # Look for checkpoints in current or checkpoints dir
+        candidates = ["checkpoints/best.pt", "best.pt", "model.pt", "checkpoint.pt"]
+        found = None
+        for c in candidates:
+            if os.path.isfile(c):
+                found = c
+                break
+        if found:
+            checkpoint_path = os.path.abspath(found)
+        else:
+            print(f"[Notice] Checkpoint not found at '{checkpoint_path}'. Running in demonstration mode.")
+            model = VoiceCloneCNN().to(_DEVICE)
+            model.eval()
+            _CACHED_MODEL = model
+            _CACHED_MODEL_PATH = checkpoint_path
+            _CACHED_THRESHOLD = 0.5
+            _CACHED_FEATURE = "mfcc"
+            return model
 
     if _CACHED_MODEL is not None and _CACHED_MODEL_PATH == checkpoint_path:
         return _CACHED_MODEL
@@ -67,7 +87,7 @@ def get_model(checkpoint_path: str):
         ckpt = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=True)
     except Exception:
         ckpt = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=False)
-    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
+    state_dict = ckpt["model_state"] if (isinstance(ckpt, dict) and "model_state" in ckpt) else ckpt
     model.load_state_dict(state_dict)
     model.eval()
 
@@ -772,5 +792,27 @@ with gr.Blocks(
             )
 
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860, share=False, theme=custom_theme)
+    import argparse
+    parser = argparse.ArgumentParser(description="Voice Clone Detector Gradio Dashboard")
+    parser.add_argument("--checkpoint", default="checkpoints/best.pt", help="Path to trained model checkpoint")
+    parser.add_argument("--server-name", default=os.getenv("SERVER_NAME", "0.0.0.0" if os.getenv("SPACE_ID") else "127.0.0.1"), help="Server bind host")
+    parser.add_argument("--server-port", type=int, default=int(os.getenv("PORT", 7860)), help="Server bind port")
+    parser.add_argument("--share", action="store_true", help="Generate public gradio.live share link")
+    args = parser.parse_args()
+
+    # Preload model if checkpoint exists
+    if os.path.exists(args.checkpoint):
+        try:
+            get_model(args.checkpoint)
+            print(f"Preloaded checkpoint from: {args.checkpoint}")
+        except Exception as e:
+            print(f"[Warning] Could not preload checkpoint: {e}")
+
+    print(f"Starting Gradio Dashboard on http://{args.server_name}:{args.server_port} (share={args.share})")
+    demo.launch(
+        server_name=args.server_name,
+        server_port=args.server_port,
+        share=args.share,
+        theme=custom_theme,
+    )
 

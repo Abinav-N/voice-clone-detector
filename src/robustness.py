@@ -19,7 +19,17 @@ Usage:
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -27,11 +37,18 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from model import VoiceCloneCNN
-from features import (
-    load_audio, extract_features, SAMPLE_RATE, N_MFCC,
-)
-from metrics import compute_eer
+try:
+    from model import VoiceCloneCNN
+    from features import (
+        load_audio, extract_features, SAMPLE_RATE, N_MFCC,
+    )
+    from metrics import compute_eer
+except ImportError:
+    from src.model import VoiceCloneCNN
+    from src.features import (
+        load_audio, extract_features, SAMPLE_RATE, N_MFCC,
+    )
+    from src.metrics import compute_eer
 
 
 # --------------------------------------------------------------------------- #

@@ -1,8 +1,18 @@
 import argparse
 import os
+import sys
 import csv
 import json
 import random
+from pathlib import Path
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import torch
@@ -11,9 +21,14 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset import VoiceSpoofDataset
-from model import VoiceCloneCNN
-from metrics import compute_eer
+try:
+    from dataset import VoiceSpoofDataset
+    from model import VoiceCloneCNN
+    from metrics import compute_eer
+except ImportError:
+    from src.dataset import VoiceSpoofDataset
+    from src.model import VoiceCloneCNN
+    from src.metrics import compute_eer
 
 
 def set_seed(seed: int = 42):
@@ -89,6 +104,11 @@ def main():
     ap.add_argument("--resume", default=None, help="checkpoint path to resume training from")
 
     args = ap.parse_args()
+
+    # Task 21: Windows num_workers safety
+    if os.name == "nt" and args.num_workers > 0:
+        print(f"[Notice] Setting num_workers={args.num_workers} -> 0 on Windows to prevent multiprocessing crashes.")
+        args.num_workers = 0
 
     # Reproducibility
     set_seed(args.seed)

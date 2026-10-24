@@ -16,15 +16,28 @@ Usage:
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from features import load_audio, SAMPLE_RATE, N_MFCC, N_FFT, HOP_LENGTH, WIN_LENGTH
-from metrics import compute_eer
+try:
+    from features import load_audio, SAMPLE_RATE, N_MFCC, N_FFT, HOP_LENGTH, WIN_LENGTH
+    from metrics import compute_eer
+except ImportError:
+    from src.features import load_audio, SAMPLE_RATE, N_MFCC, N_FFT, HOP_LENGTH, WIN_LENGTH
+    from src.metrics import compute_eer
 
 
 # --------------------------------------------------------------------------- #

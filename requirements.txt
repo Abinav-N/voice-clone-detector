@@ -9,3 +9,4 @@ tqdm>=4.65
 soundfile>=0.12
 gradio>=4.0
 matplotlib>=3.7
+pytest>=7.0

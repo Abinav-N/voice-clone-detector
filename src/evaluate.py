@@ -1,8 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -10,9 +19,14 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report
 
-from dataset import VoiceSpoofDataset
-from model import VoiceCloneCNN
-from metrics import compute_eer
+try:
+    from dataset import VoiceSpoofDataset
+    from model import VoiceCloneCNN
+    from metrics import compute_eer
+except ImportError:
+    from src.dataset import VoiceSpoofDataset
+    from src.model import VoiceCloneCNN
+    from src.metrics import compute_eer
 
 
 def run_evaluation(

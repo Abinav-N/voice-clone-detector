@@ -1,13 +1,25 @@
 """
 Generic manifest-based dataset with feature caching, augmentation, and logmel/mfcc support.
 
-Expected CSV format:
-    filepath,label[,attack_id]
+Task 21 - Bug-hardening:
+  - Corrupt-file errors are caught per-sample and replaced with a zero tensor so
+    training does not crash on a single bad or unreadable clip.
+  - Safe cache writes with try/except so permission/disk errors do not halt training.
+  - Import path hardening: works when invoked from repo root, src/, or imported as a package.
 """
 import os
+import sys
 import hashlib
 from pathlib import Path
 from typing import Optional
+
+# Universal import hardening
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -15,7 +27,10 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from features import extract_features_from_path
+try:
+    from features import extract_features_from_path, FIXED_FRAMES, N_MFCC
+except ImportError:
+    from src.features import extract_features_from_path, FIXED_FRAMES, N_MFCC
 
 LABEL_MAP = {"bonafide": 0, "real": 0, "spoof": 1, "fake": 1, "bona-fide": 0}
 
@@ -58,15 +73,23 @@ class VoiceSpoofDataset(Dataset):
         return os.path.join(self.cache_dir, f"{stem}_{self.feature_type}_{h}.npy")
 
     def precompute_cache(self):
-        """Precompute all features in this dataset to .npy files."""
+        """Precompute all features in this dataset to .npy files with corrupt file handling."""
         if not self.cache_dir:
             raise ValueError("Cannot precompute cache: cache_dir was not specified.")
         print(f"Precomputing {self.feature_type} features ({len(self.df)} clips) into {self.cache_dir}...")
         for filepath in tqdm(self.df["filepath"], desc=f"Caching {self.feature_type}"):
             cache_file = self._get_cache_path(filepath)
             if not os.path.isfile(cache_file):
-                feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
-                np.save(cache_file, feat)
+                try:
+                    feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
+                    np.save(cache_file, feat)
+                except Exception as e:
+                    print(f"[Warning] Failed caching {filepath}: {e}. Storing zero features.")
+                    feat = np.zeros((3, N_MFCC, FIXED_FRAMES), dtype=np.float32)
+                    try:
+                        np.save(cache_file, feat)
+                    except Exception:
+                        pass
 
     def __len__(self):
         return len(self.df)
@@ -75,18 +98,36 @@ class VoiceSpoofDataset(Dataset):
         row = self.df.iloc[idx]
         filepath = row["filepath"]
 
-        # If data augmentation is active, augment waveform on the fly (bypass static cache)
-        if self.augment:
-            feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=True)
-        elif self.cache_dir:
-            cache_file = self._get_cache_path(filepath)
-            if os.path.isfile(cache_file):
-                feat = np.load(cache_file)
+        feat = None
+        try:
+            # If data augmentation is active, augment waveform on the fly (bypass static cache)
+            if self.augment:
+                feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=True)
+            elif self.cache_dir:
+                cache_file = self._get_cache_path(filepath)
+                if os.path.isfile(cache_file):
+                    try:
+                        feat = np.load(cache_file)
+                    except Exception:
+                        feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
+                        try:
+                            np.save(cache_file, feat)
+                        except Exception:
+                            pass
+                else:
+                    feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
+                    try:
+                        np.save(cache_file, feat)
+                    except Exception:
+                        pass
             else:
                 feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
-                np.save(cache_file, feat)
-        else:
-            feat = extract_features_from_path(filepath, feature_type=self.feature_type, augment=False)
+        except Exception as e:
+            # Task 21: Corrupt-file handling - return zero feature array of proper shape
+            feat = np.zeros((3, N_MFCC, FIXED_FRAMES), dtype=np.float32)
+
+        if feat is None or feat.shape != (3, N_MFCC, FIXED_FRAMES):
+            feat = np.zeros((3, N_MFCC, FIXED_FRAMES), dtype=np.float32)
 
         label = int(row["label_idx"])
-        return torch.from_numpy(feat), torch.tensor(label, dtype=torch.long)
+        return torch.from_numpy(feat).float(), torch.tensor(label, dtype=torch.long)
